@@ -1,12 +1,54 @@
 ﻿from __future__ import annotations
 
 import uuid
+from datetime import datetime
 from pathlib import Path
+from zoneinfo import ZoneInfo
+
 import pandas as pd
 
 from src.ai_copilot import create_ai_decision
 from src.risk_gate import risk_gate_allows_trade
 from src.strategy import judge_signal
+
+
+def create_run_metadata(
+    take_profit_pips: float,
+    stop_loss_pips: float,
+    unit_jpy_per_pip: float,
+) -> dict:
+    now_jst = datetime.now(ZoneInfo("Asia/Tokyo"))
+    run_id = now_jst.strftime("%Y%m%d_%H%M%S")
+
+    return {
+        "run_id": run_id,
+        "run_started_at_jst": now_jst.strftime("%Y-%m-%d %H:%M:%S"),
+        "take_profit_pips": float(take_profit_pips),
+        "stop_loss_pips": float(stop_loss_pips),
+        "unit_jpy_per_pip": float(unit_jpy_per_pip),
+    }
+
+
+def add_run_metadata(df: pd.DataFrame, metadata: dict) -> pd.DataFrame:
+    df = df.copy()
+
+    for key, value in metadata.items():
+        df[key] = value
+
+    # QuickSightで見やすいように、run_id系を先頭へ寄せる
+    preferred_order = [
+        "run_id",
+        "run_started_at_jst",
+        "take_profit_pips",
+        "stop_loss_pips",
+        "unit_jpy_per_pip",
+    ]
+
+    ordered_columns = [c for c in preferred_order if c in df.columns] + [
+        c for c in df.columns if c not in preferred_order
+    ]
+
+    return df[ordered_columns]
 
 
 def run_backtest(
@@ -16,6 +58,12 @@ def run_backtest(
     stop_loss_pips: float = 7.0,
     unit_jpy_per_pip: float = 100.0,
 ) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
+    run_metadata = create_run_metadata(
+        take_profit_pips=take_profit_pips,
+        stop_loss_pips=stop_loss_pips,
+        unit_jpy_per_pip=unit_jpy_per_pip,
+    )
+
     trades = []
     ai_decisions = []
 
@@ -131,6 +179,10 @@ def run_backtest(
         daily_summary["win_rate"] = daily_summary["win_count"] / daily_summary["trade_count"]
     else:
         daily_summary = pd.DataFrame()
+
+    trades_df = add_run_metadata(trades_df, run_metadata) if not trades_df.empty else trades_df
+    ai_df = add_run_metadata(ai_df, run_metadata) if not ai_df.empty else ai_df
+    daily_summary = add_run_metadata(daily_summary, run_metadata) if not daily_summary.empty else daily_summary
 
     return trades_df, ai_df, daily_summary
 

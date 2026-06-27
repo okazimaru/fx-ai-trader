@@ -5,3 +5,4 @@ pyarrow
 boto3
 python-dotenv
 plotly
+openai

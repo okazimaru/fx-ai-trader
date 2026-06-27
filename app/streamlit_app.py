@@ -1,5 +1,6 @@
 ﻿from __future__ import annotations
 
+import json
 import sys
 from pathlib import Path
 
@@ -14,6 +15,8 @@ from src.data_loader import load_price_data
 from src.indicators import add_indicators
 from src.macro_events import load_macro_events
 from src.backtest_engine import run_backtest, save_outputs
+from src.s3_writer import upload_outputs_to_s3
+from src.llm_copilot import generate_ai_report
 
 
 st.set_page_config(
@@ -30,13 +33,17 @@ with st.sidebar:
     take_profit_pips = st.number_input("Take Profit pips", min_value=1.0, max_value=50.0, value=10.0, step=1.0)
     stop_loss_pips = st.number_input("Stop Loss pips", min_value=1.0, max_value=50.0, value=7.0, step=1.0)
     unit_jpy_per_pip = st.number_input("1 pipあたり損益円", min_value=1.0, max_value=10000.0, value=100.0, step=50.0)
+
     run_button = st.button("疑似売買を実行", type="primary")
+    upload_button = st.button("S3へアップロード")
 
 price_df = load_price_data()
 price_df = add_indicators(price_df)
 macro_events = load_macro_events()
 
-tab1, tab2, tab3, tab4 = st.tabs(["Dashboard", "Trades", "AI Decisions", "Macro Events"])
+tab1, tab2, tab3, tab4, tab5 = st.tabs(
+    ["Dashboard", "Trades", "AI Decisions", "Macro Events", "AI Copilot"]
+)
 
 if run_button:
     trades_df, ai_df, daily_summary = run_backtest(
@@ -52,6 +59,17 @@ if run_button:
     st.session_state["trades_df"] = trades_df
     st.session_state["ai_df"] = ai_df
     st.session_state["daily_summary"] = daily_summary
+
+    st.success("疑似売買を実行し、ローカルに出力しました。")
+
+if upload_button:
+    try:
+        uploaded_paths = upload_outputs_to_s3()
+        st.success("S3アップロードが完了しました。")
+        for path in uploaded_paths:
+            st.write(path)
+    except Exception as e:
+        st.error(f"S3アップロードに失敗しました: {e}")
 
 trades_df = st.session_state.get("trades_df", pd.DataFrame())
 ai_df = st.session_state.get("ai_df", pd.DataFrame())
@@ -99,3 +117,51 @@ with tab3:
 with tab4:
     st.subheader("経済イベント")
     st.dataframe(macro_events, use_container_width=True)
+
+with tab5:
+    st.subheader("AI Copilot")
+    st.caption("LLMによる相場レビュー。発注判断ではなく、運用補助コメントとして扱います。")
+
+    if trades_df.empty or ai_df.empty or daily_summary.empty:
+        st.info("まず左の「疑似売買を実行」を押してから、AI相場レビューを生成してください。")
+    else:
+        if st.button("AI相場レビューを生成", type="primary"):
+            try:
+                report = generate_ai_report(
+                    price_df=price_df,
+                    trades_df=trades_df,
+                    ai_df=ai_df,
+                    daily_summary=daily_summary,
+                    macro_events=macro_events,
+                )
+
+                st.session_state["ai_report"] = report
+                st.success("AI相場レビューを生成しました。")
+
+            except Exception as e:
+                st.error(f"AI相場レビュー生成に失敗しました: {e}")
+
+    report = st.session_state.get("ai_report")
+
+    if report:
+        c1, c2, c3 = st.columns(3)
+        c1.metric("取引可否", report["trade_permission"])
+        c2.metric("示唆方向", report["suggested_side"])
+        c3.metric("信頼度", f'{report["confidence"]:.0%}')
+
+        st.markdown("### 相場要約")
+        st.write(report["market_summary"])
+
+        st.markdown("### 主な理由")
+        for reason in report["main_reasons"]:
+            st.write(f"- {reason}")
+
+        st.markdown("### 警告")
+        for warning in report["warnings"]:
+            st.write(f"- {warning}")
+
+        st.markdown("### 次の行動")
+        st.write(report["next_action"])
+
+        with st.expander("JSON出力"):
+            st.code(json.dumps(report, ensure_ascii=False, indent=2), language="json")
