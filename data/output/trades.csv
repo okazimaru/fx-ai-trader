@@ -1,2 +1,0 @@
-trade_id,symbol,strategy_name,side,entry_time,entry_price,entry_reason,ai_decision_id,exit_time,exit_price,pips,pnl_jpy,result,exit_reason
-0855e01a-a347-4634-9215-89c93521e98c,USDJPY,ma_rsi_v1,short,2026-06-01 11:55:00+09:00,159.9968419946831,短期MAが長期MAを下回り、RSIが許容範囲,1b7f165d-b0bd-4fca-8a62-762d7e988da0,2026-06-07 07:00:00+09:00,160.06694026847197,-7.009827378885802,-700.9827378885802,lose,stop_loss
