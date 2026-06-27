@@ -26,3 +26,8 @@ Thumbs.db
 
 # AWS
 .aws/
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
