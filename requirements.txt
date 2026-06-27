@@ -1,0 +1,7 @@
+﻿streamlit
+pandas
+numpy
+pyarrow
+boto3
+python-dotenv
+plotly

@@ -1,0 +1,3 @@
+event_id,event_time_jst,country,currency,category,event_name,speaker,importance,forecast,previous,actual,status,no_trade_before_min,no_trade_after_min
+US_CPI_20260601,2026-06-01 21:30:00+09:00,US,USD,indicator,US CPI,,high,,,,scheduled,60,90
+FOMC_20260604,2026-06-04 03:00:00+09:00,US,USD,central_bank,FOMC Rate Decision,Fed Chair,high,,,,scheduled,120,120
