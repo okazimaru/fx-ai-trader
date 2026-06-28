@@ -31,3 +31,6 @@ Thumbs.db
 __pycache__/
 *.pyc
 *.pyo
+
+# Local upload test data
+data/sample/upload_test_*.csv
