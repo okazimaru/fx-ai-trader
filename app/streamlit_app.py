@@ -21,6 +21,7 @@ from src.macro_events import load_macro_events
 from src.backtest_engine import run_backtest, save_outputs
 from src.s3_writer import upload_outputs_to_s3
 from src.llm_copilot import generate_ai_report
+from src.auth import require_login
 
 
 st.set_page_config(
@@ -105,6 +106,8 @@ def side_label(value: str) -> str:
 
 st.title("FX AI Trader MVP")
 st.caption("疑似デイトレード × AI判断ログ × QuickSight連携用データ出力")
+
+require_login()
 
 
 with st.sidebar:
