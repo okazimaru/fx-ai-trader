@@ -1,10 +1,16 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 from datetime import timedelta
+
 import pandas as pd
 
+from src.trading_config import RiskConfig, load_trading_config
 
-def is_macro_event_blocked(now_jst: pd.Timestamp, macro_events: pd.DataFrame) -> tuple[bool, str | None]:
+
+def is_macro_event_blocked(
+    now_jst: pd.Timestamp,
+    macro_events: pd.DataFrame,
+) -> tuple[bool, str | None]:
     if macro_events.empty:
         return False, None
 
@@ -30,19 +36,23 @@ def risk_gate_allows_trade(
     spread: float,
     daily_pnl: float,
     consecutive_losses: int,
+    trades_today: int,
     macro_events: pd.DataFrame,
-    max_spread: float = 0.03,
-    max_daily_loss: float = -3000,
-    max_consecutive_losses: int = 3,
+    config: RiskConfig | None = None,
 ) -> tuple[bool, str]:
-    if spread > max_spread:
+    risk = config or load_trading_config().risk
+
+    if spread > risk.max_spread:
         return False, f"スプレッド拡大のため停止: {spread:.4f}"
 
-    if daily_pnl <= max_daily_loss:
+    if daily_pnl <= -abs(risk.max_daily_loss_jpy):
         return False, f"日次最大損失に到達: {daily_pnl:.0f}円"
 
-    if consecutive_losses >= max_consecutive_losses:
+    if consecutive_losses >= risk.max_consecutive_losses:
         return False, f"連敗停止: {consecutive_losses}連敗"
+
+    if trades_today >= risk.max_trades_per_day:
+        return False, f"1日最大取引回数に到達: {trades_today}回"
 
     blocked, reason = is_macro_event_blocked(now_jst, macro_events)
     if blocked:
