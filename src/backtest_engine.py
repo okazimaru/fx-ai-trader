@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 import uuid
 from datetime import datetime
@@ -10,12 +10,14 @@ import pandas as pd
 from src.ai_copilot import create_ai_decision
 from src.risk_gate import risk_gate_allows_trade
 from src.strategy import judge_signal
+from src.trading_config import TradingConfig, load_trading_config
 
 
 def create_run_metadata(
     take_profit_pips: float,
     stop_loss_pips: float,
     unit_jpy_per_pip: float,
+    trading_config: TradingConfig,
 ) -> dict:
     now_jst = datetime.now(ZoneInfo("Asia/Tokyo"))
     run_id = now_jst.strftime("%Y%m%d_%H%M%S")
@@ -26,6 +28,7 @@ def create_run_metadata(
         "take_profit_pips": float(take_profit_pips),
         "stop_loss_pips": float(stop_loss_pips),
         "unit_jpy_per_pip": float(unit_jpy_per_pip),
+        **trading_config.to_run_metadata(),
     }
 
 
@@ -35,13 +38,20 @@ def add_run_metadata(df: pd.DataFrame, metadata: dict) -> pd.DataFrame:
     for key, value in metadata.items():
         df[key] = value
 
-    # QuickSightで見やすいように、run_id系を先頭へ寄せる
     preferred_order = [
         "run_id",
         "run_started_at_jst",
+        "config_version",
+        "configured_symbol",
+        "configured_timeframe",
+        "strategy_name",
         "take_profit_pips",
         "stop_loss_pips",
         "unit_jpy_per_pip",
+        "max_spread",
+        "max_daily_loss_jpy",
+        "max_consecutive_losses",
+        "max_trades_per_day",
     ]
 
     ordered_columns = [c for c in preferred_order if c in df.columns] + [
@@ -54,14 +64,31 @@ def add_run_metadata(df: pd.DataFrame, metadata: dict) -> pd.DataFrame:
 def run_backtest(
     df: pd.DataFrame,
     macro_events: pd.DataFrame,
-    take_profit_pips: float = 10.0,
-    stop_loss_pips: float = 7.0,
-    unit_jpy_per_pip: float = 100.0,
+    take_profit_pips: float | None = None,
+    stop_loss_pips: float | None = None,
+    unit_jpy_per_pip: float | None = None,
+    config: TradingConfig | None = None,
 ) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
+    trading_config = config or load_trading_config()
+    execution = trading_config.execution
+
+    resolved_take_profit = (
+        execution.take_profit_pips if take_profit_pips is None else float(take_profit_pips)
+    )
+    resolved_stop_loss = (
+        execution.stop_loss_pips if stop_loss_pips is None else float(stop_loss_pips)
+    )
+    resolved_unit_jpy = (
+        execution.unit_jpy_per_pip
+        if unit_jpy_per_pip is None
+        else float(unit_jpy_per_pip)
+    )
+
     run_metadata = create_run_metadata(
-        take_profit_pips=take_profit_pips,
-        stop_loss_pips=stop_loss_pips,
-        unit_jpy_per_pip=unit_jpy_per_pip,
+        take_profit_pips=resolved_take_profit,
+        stop_loss_pips=resolved_stop_loss,
+        unit_jpy_per_pip=resolved_unit_jpy,
+        trading_config=trading_config,
     )
 
     trades = []
@@ -71,6 +98,7 @@ def run_backtest(
     daily_pnl = 0.0
     current_trade_date = None
     consecutive_losses = 0
+    trades_today = 0
 
     for _, row in df.iterrows():
         now = pd.Timestamp(row["timestamp"])
@@ -80,18 +108,21 @@ def run_backtest(
             current_trade_date = trade_date
             daily_pnl = 0.0
             consecutive_losses = 0
+            trades_today = 0
 
         price = float(row["close"])
         spread = float(row["spread"])
 
-        side, signal_reason = judge_signal(row)
+        side, signal_reason = judge_signal(row, trading_config.strategy)
 
         risk_allowed, risk_reason = risk_gate_allows_trade(
             now_jst=now,
             spread=spread,
             daily_pnl=daily_pnl,
             consecutive_losses=consecutive_losses,
+            trades_today=trades_today,
             macro_events=macro_events,
+            config=trading_config.risk,
         )
 
         ai_decision = create_ai_decision(
@@ -112,53 +143,53 @@ def run_backtest(
                 position = {
                     "trade_id": str(uuid.uuid4()),
                     "symbol": row["symbol"],
-                    "strategy_name": "ma_rsi_v1",
+                    "strategy_name": trading_config.strategy.name,
                     "side": side,
                     "entry_time": now,
                     "entry_price": price,
                     "entry_reason": signal_reason,
                     "ai_decision_id": ai_decision["decision_id"],
                 }
+                trades_today += 1
             continue
 
-        if position is not None:
-            if position["side"] == "long":
-                pnl_pips = (price - position["entry_price"]) * 100
+        if position["side"] == "long":
+            pnl_pips = (price - position["entry_price"]) * 100
+        else:
+            pnl_pips = (position["entry_price"] - price) * 100
+
+        exit_reason = None
+        if pnl_pips >= resolved_take_profit:
+            exit_reason = "take_profit"
+        elif pnl_pips <= -resolved_stop_loss:
+            exit_reason = "stop_loss"
+
+        if exit_reason:
+            pnl_jpy = pnl_pips * resolved_unit_jpy
+            daily_pnl += pnl_jpy
+
+            if pnl_jpy < 0:
+                consecutive_losses += 1
+                result = "lose"
+            elif pnl_jpy > 0:
+                consecutive_losses = 0
+                result = "win"
             else:
-                pnl_pips = (position["entry_price"] - price) * 100
+                result = "breakeven"
 
-            exit_reason = None
-            if pnl_pips >= take_profit_pips:
-                exit_reason = "take_profit"
-            elif pnl_pips <= -stop_loss_pips:
-                exit_reason = "stop_loss"
+            trades.append(
+                {
+                    **position,
+                    "exit_time": now,
+                    "exit_price": price,
+                    "pips": pnl_pips,
+                    "pnl_jpy": pnl_jpy,
+                    "result": result,
+                    "exit_reason": exit_reason,
+                }
+            )
 
-            if exit_reason:
-                pnl_jpy = pnl_pips * unit_jpy_per_pip
-                daily_pnl += pnl_jpy
-
-                if pnl_jpy < 0:
-                    consecutive_losses += 1
-                    result = "lose"
-                elif pnl_jpy > 0:
-                    consecutive_losses = 0
-                    result = "win"
-                else:
-                    result = "breakeven"
-
-                trades.append(
-                    {
-                        **position,
-                        "exit_time": now,
-                        "exit_price": price,
-                        "pips": pnl_pips,
-                        "pnl_jpy": pnl_jpy,
-                        "result": result,
-                        "exit_reason": exit_reason,
-                    }
-                )
-
-                position = None
+            position = None
 
     trades_df = pd.DataFrame(trades)
     ai_df = pd.DataFrame(ai_decisions)
