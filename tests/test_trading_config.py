@@ -12,9 +12,10 @@ class TradingConfigTests(unittest.TestCase):
     def test_default_config_loads(self) -> None:
         config = load_trading_config()
 
-        self.assertEqual(config.version, 1)
+        self.assertEqual(config.version, 2)
         self.assertEqual(config.market.symbol, "USDJPY")
         self.assertEqual(config.market.timeframe, "5m")
+        self.assertEqual(config.risk.max_daily_loss_jpy, 5000.0)
         self.assertGreater(config.execution.take_profit_pips, 0)
         self.assertGreater(config.execution.stop_loss_pips, 0)
 
