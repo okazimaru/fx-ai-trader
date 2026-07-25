@@ -1,0 +1,25 @@
+{
+  "version": 1,
+  "market": {
+    "symbol": "USDJPY",
+    "timeframe": "5m"
+  },
+  "strategy": {
+    "name": "ma_rsi_v1",
+    "long_rsi_min": 40.0,
+    "long_rsi_max": 70.0,
+    "short_rsi_min": 30.0,
+    "short_rsi_max": 60.0
+  },
+  "risk": {
+    "max_spread": 0.03,
+    "max_daily_loss_jpy": 3000.0,
+    "max_consecutive_losses": 3,
+    "max_trades_per_day": 5
+  },
+  "execution": {
+    "take_profit_pips": 10.0,
+    "stop_loss_pips": 7.0,
+    "unit_jpy_per_pip": 100.0
+  }
+}
