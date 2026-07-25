@@ -87,6 +87,11 @@ config = load_trading_config()
 execution = config.execution
 risk = config.risk
 
+flash = st.session_state.pop("flash_message", None)
+if flash:
+    level, message = flash
+    getattr(st, level)(message)
+
 st.title("FX AI Trader")
 st.caption("確認 → 実行 → AIレビュー → 保存の順で、迷わずシミュレーションを進められます。")
 st.markdown(
@@ -198,8 +203,8 @@ with st.container(border=True):
         st.caption("結果をAIが要約し、確認点を提示します。")
     with c3:
         st.markdown('<div class="step">STEP 3</div>', unsafe_allow_html=True)
-        upload_button = st.button("結果をS3へ保存", disabled=not has_run)
-        st.caption("履歴画面から確認できるように保存します。")
+        upload_button = st.button("結果をS3へ保存", disabled=not (has_run and report))
+        st.caption("AIレビューを含む結果を履歴へ保存します。")
 
 if run_button:
     try:
@@ -217,9 +222,16 @@ if run_button:
         st.session_state.pop("ai_report", None)
         st.session_state.pop("uploaded_run_id", None)
         if daily_summary.empty:
-            st.warning("実行は完了しましたが、今回の条件では決済済み取引がありませんでした。")
+            st.session_state["flash_message"] = (
+                "warning",
+                "実行は完了しましたが、今回の条件では決済済み取引がありませんでした。",
+            )
         else:
-            st.success(f"シミュレーション完了：{first_value(daily_summary, 'run_id')}")
+            st.session_state["flash_message"] = (
+                "success",
+                f"シミュレーション完了：{first_value(daily_summary, 'run_id')}",
+            )
+        st.rerun()
     except Exception as exc:
         st.error(f"シミュレーションに失敗しました: {exc}")
 
@@ -233,7 +245,8 @@ if review_button:
             macro_events=macro_events,
         )
         st.session_state["ai_report"] = report
-        st.success("AIレビューを生成しました。")
+        st.session_state["flash_message"] = ("success", "AIレビューを生成しました。")
+        st.rerun()
     except Exception as exc:
         st.error(f"AIレビュー生成に失敗しました: {exc}")
 
@@ -242,12 +255,19 @@ if upload_button:
         uploaded_paths = upload_outputs_to_s3()
         current_run_id = first_value(daily_summary, "run_id", "")
         st.session_state["uploaded_run_id"] = current_run_id
-        st.success(f"run {current_run_id} をS3へ保存しました。")
-        with st.expander("保存先を確認"):
-            for path in uploaded_paths:
-                st.code(path)
+        st.session_state["uploaded_paths"] = uploaded_paths
+        st.session_state["flash_message"] = (
+            "success",
+            f"run {current_run_id} をS3へ保存しました。",
+        )
+        st.rerun()
     except Exception as exc:
         st.error(f"S3への保存に失敗しました: {exc}")
+
+if st.session_state.get("uploaded_paths"):
+    with st.expander("直近のS3保存先"):
+        for path in st.session_state["uploaded_paths"]:
+            st.code(path)
 
 trades_df = st.session_state.get("trades_df", trades_df)
 ai_df = st.session_state.get("ai_df", ai_df)
