@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 import json
 import sys
@@ -9,386 +9,370 @@ import plotly.express as px
 import streamlit as st
 
 ROOT = Path(__file__).resolve().parents[1]
-sys.path.append(str(ROOT))
+if str(ROOT) not in sys.path:
+    sys.path.append(str(ROOT))
 
-from src.data_loader import (
-    get_price_data_quality,
-    load_price_data,
-    load_uploaded_price_data,
-)
-from src.indicators import add_indicators
-from src.macro_events import load_macro_events
-from src.backtest_engine import run_backtest, save_outputs
-from src.s3_writer import upload_outputs_to_s3
-from src.llm_copilot import generate_ai_report
 from src.auth import require_login
-
+from src.backtest_engine import run_backtest, save_outputs
+from src.data_loader import get_price_data_quality, load_price_data, load_uploaded_price_data
+from src.indicators import add_indicators
+from src.llm_copilot import generate_ai_report
+from src.macro_events import load_macro_events
+from src.s3_writer import upload_outputs_to_s3
+from src.trading_config import load_trading_config
 
 st.set_page_config(
-    page_title="FX AI Trader MVP",
+    page_title="FX AI Trader",
     page_icon="📈",
     layout="wide",
+    initial_sidebar_state="collapsed",
 )
-
 
 st.markdown(
     """
     <style>
-    .block-container {
-        padding-top: 1.5rem;
-        padding-bottom: 2rem;
-        max-width: 1100px;
-    }
-
-    div.stButton > button {
-        width: 100%;
-        min-height: 3rem;
-        font-weight: 700;
-        border-radius: 0.8rem;
-    }
-
-    [data-testid="stMetricValue"] {
-        font-size: 1.7rem;
-    }
-
-    .mobile-card {
-        border: 1px solid rgba(49, 51, 63, 0.15);
-        border-radius: 1rem;
-        padding: 1rem;
-        margin-bottom: 1rem;
-        background: rgba(250, 250, 250, 0.8);
-    }
-
-    .section-title {
-        font-size: 1.25rem;
-        font-weight: 800;
-        margin-top: 1rem;
-        margin-bottom: 0.5rem;
-    }
-
-    .subtle-text {
-        color: #6b7280;
-        font-size: 0.9rem;
-    }
+    .block-container {max-width: 1180px; padding-top: 1.2rem; padding-bottom: 3rem;}
+    h1, h2, h3 {letter-spacing: -0.02em;}
+    div.stButton > button {width: 100%; min-height: 3rem; font-weight: 700; border-radius: .75rem;}
+    [data-testid="stMetric"] {border: 1px solid rgba(49,51,63,.12); border-radius: .9rem; padding: .8rem 1rem; background: rgba(250,250,250,.5);}
+    [data-testid="stMetricValue"] {font-size: 1.45rem;}
+    .hero {border: 1px solid rgba(49,51,63,.12); border-radius: 1rem; padding: 1rem 1.15rem; margin: .25rem 0 1.2rem; background: linear-gradient(135deg, rgba(35,99,235,.08), rgba(16,185,129,.05));}
+    .hero-title {font-size: 1.05rem; font-weight: 800; margin-bottom: .25rem;}
+    .muted {color: #6b7280; font-size: .9rem;}
+    .step {font-size: .78rem; color: #6b7280; font-weight: 700; letter-spacing: .04em; margin-bottom: .25rem;}
+    .chips {display: flex; flex-wrap: wrap; gap: .5rem; margin: .4rem 0 .8rem;}
+    .chip {display: inline-flex; border-radius: 999px; padding: .35rem .7rem; font-size: .84rem; font-weight: 700; border: 1px solid rgba(49,51,63,.12); background: rgba(250,250,250,.72);}
+    .ok {color: #047857;} .warn {color: #b45309;} .stop {color: #b91c1c;} .neutral {color: #4b5563;}
+    @media (max-width: 700px) {[data-testid="stMetricValue"] {font-size: 1.2rem;}}
     </style>
     """,
     unsafe_allow_html=True,
 )
 
 
-def status_icon(status: str) -> str:
-    if status == "fresh":
-        return "🟢"
-    if status == "slightly_old":
-        return "🟡"
-    if status == "stale":
-        return "🔴"
-    return "⚪"
+def freshness_display(status: str) -> tuple[str, str]:
+    return {
+        "fresh": ("正常", "ok"),
+        "slightly_old": ("やや古い", "warn"),
+        "stale": ("古い", "stop"),
+        "empty": ("データなし", "neutral"),
+    }.get(status, (status or "不明", "neutral"))
 
 
 def permission_label(value: str) -> str:
-    labels = {
+    return {
         "entry_allowed": "エントリー許可",
         "wait": "見送り",
         "risk_stop": "リスク停止",
-    }
-    return labels.get(value, value)
+    }.get(value, value)
 
 
 def side_label(value: str) -> str:
-    labels = {
-        "long": "ロング",
-        "short": "ショート",
-        "none": "方向なし",
-    }
-    return labels.get(value, value)
+    return {"long": "ロング", "short": "ショート", "none": "方向なし"}.get(value, value)
 
 
-st.title("FX AI Trader MVP")
-st.caption("疑似デイトレード × AI判断ログ × QuickSight連携用データ出力")
+def result_label(value: str) -> str:
+    return {"win": "勝ち", "lose": "負け", "breakeven": "引き分け"}.get(value, value)
+
+
+def first_value(df: pd.DataFrame, column: str, default: str = "-") -> str:
+    if df.empty or column not in df.columns:
+        return default
+    values = df[column].dropna()
+    return default if values.empty else str(values.iloc[0])
+
 
 require_login()
+config = load_trading_config()
+execution = config.execution
+risk = config.risk
 
+flash = st.session_state.pop("flash_message", None)
+if flash:
+    level, message = flash
+    getattr(st, level)(message)
+
+st.title("FX AI Trader")
+st.caption("確認 → 実行 → AIレビュー → 保存の順で、迷わずシミュレーションを進められます。")
+st.markdown(
+    """
+    <div class="hero">
+      <div class="hero-title">現在はシミュレーション環境です</div>
+      <div class="muted">実口座への注文は行いません。Saxo接続後も、読み取り専用とSIM環境から段階的に移行します。</div>
+    </div>
+    """,
+    unsafe_allow_html=True,
+)
 
 with st.sidebar:
-    st.header("詳細設定")
-
+    st.header("シミュレーション設定")
+    st.caption(f"設定バージョン {config.version}")
     take_profit_pips = st.number_input(
-        "Take Profit pips",
-        min_value=1.0,
-        max_value=50.0,
-        value=10.0,
-        step=1.0,
+        "利確幅（pips）", 1.0, 50.0, float(execution.take_profit_pips), 1.0,
+        help="この値へ到達したら利益確定します。",
     )
-
     stop_loss_pips = st.number_input(
-        "Stop Loss pips",
-        min_value=1.0,
-        max_value=50.0,
-        value=7.0,
-        step=1.0,
+        "損切り幅（pips）", 1.0, 50.0, float(execution.stop_loss_pips), 1.0,
+        help="この値まで逆行したら損切りします。",
     )
-
     unit_jpy_per_pip = st.number_input(
-        "1 pipあたり損益円",
-        min_value=1.0,
-        max_value=10000.0,
-        value=100.0,
-        step=50.0,
+        "1 pipあたりの損益（円）", 1.0, 10000.0, float(execution.unit_jpy_per_pip), 10.0,
+        help="100円/pipはUSD/JPYの約10,000通貨相当です。",
     )
-
     st.divider()
-    st.caption("スマホではメイン画面上部の操作パネルを使う想定です。")
+    st.subheader("固定リスクルール")
+    st.write(f"日次損失上限：**{risk.max_daily_loss_jpy:,.0f}円**")
+    st.write(f"最大連敗：**{risk.max_consecutive_losses}回**")
+    st.write(f"1日最大取引：**{risk.max_trades_per_day}回**")
+    st.write(f"最大スプレッド：**{risk.max_spread}**")
+    st.info("固定ルールは画面では変更せず、設定ファイルで履歴管理します。")
 
-
-st.markdown("## 今日の操作")
-
+st.markdown("## 1. データを確認")
 with st.container(border=True):
-    data_source = st.radio(
-        "価格データ",
-        ["サンプルデータ", "CSVアップロード"],
-        index=0,
-        horizontal=True,
-    )
-
-    uploaded_file = None
-    if data_source == "CSVアップロード":
-        uploaded_file = st.file_uploader(
-            "価格CSVをアップロード",
-            type=["csv"],
-            help="必要列: timestamp, open, high, low, close。任意列: symbol, timeframe, spread",
+    source_col, status_col = st.columns([1.1, 1.9])
+    with source_col:
+        data_source = st.radio(
+            "価格データ", ["サンプルデータ", "CSVアップロード"],
+            horizontal=True, label_visibility="collapsed",
         )
+        uploaded_file = None
+        if data_source == "CSVアップロード":
+            uploaded_file = st.file_uploader(
+                "価格CSV", type=["csv"],
+                help="必須列: timestamp, open, high, low, close",
+            )
 
-    with st.expander("バックテスト設定を確認する", expanded=False):
-        c1, c2, c3 = st.columns(3)
-        c1.metric("TP", f"{take_profit_pips:.1f} pips")
-        c2.metric("SL", f"{stop_loss_pips:.1f} pips")
-        c3.metric("損益単価", f"{unit_jpy_per_pip:.0f} 円/pip")
-        st.caption("設定変更は左サイドバーから行います。スマホでは左上メニューから開けます。")
-
-
-try:
-    if data_source == "CSVアップロード":
-        if uploaded_file is None:
-            price_df = pd.DataFrame()
+    try:
+        if data_source == "CSVアップロード":
+            price_df = pd.DataFrame() if uploaded_file is None else load_uploaded_price_data(uploaded_file)
         else:
-            price_df = load_uploaded_price_data(uploaded_file)
-    else:
-        price_df = load_price_data()
+            price_df = load_price_data()
+        if not price_df.empty:
+            price_df = add_indicators(price_df)
+    except Exception as exc:
+        st.error(f"価格データの読み込みに失敗しました: {exc}")
+        price_df = pd.DataFrame()
 
-    if not price_df.empty:
-        price_df = add_indicators(price_df)
+    macro_events = load_macro_events()
+    quality = get_price_data_quality(price_df)
+    freshness_text, freshness_class = freshness_display(str(quality.get("freshness_status", "empty")))
+    latest_age = quality.get("latest_age_minutes")
+    latest_age_text = "-" if latest_age is None else f"{latest_age}分"
 
-except Exception as e:
-    st.error(f"価格データの読み込みに失敗しました: {e}")
-    price_df = pd.DataFrame()
-
-
-macro_events = load_macro_events()
-
-quality = get_price_data_quality(price_df)
-
-with st.container(border=True):
-    st.markdown("### データ状態")
-
-    qc1, qc2, qc3 = st.columns(3)
-    qc1.metric("鮮度", f"{status_icon(quality['freshness_status'])} {quality['freshness_status']}")
-    qc2.metric("行数", quality["row_count"])
-    qc3.metric("最新経過分", "-" if quality["latest_age_minutes"] is None else quality["latest_age_minutes"])
-
-    st.caption(quality["message"])
-
-
-run_col, review_col, upload_col = st.columns(3)
-
-run_button = run_col.button("① 疑似売買を実行", type="primary")
-review_button = review_col.button("② AIレビュー生成")
-upload_button = upload_col.button("③ S3へアップロード")
-
-
-if run_button:
-    if price_df.empty:
-        st.error("価格データがないため、疑似売買を実行できません。")
-    else:
-        trades_df, ai_df, daily_summary = run_backtest(
-            price_df,
-            macro_events,
-            take_profit_pips=take_profit_pips,
-            stop_loss_pips=stop_loss_pips,
-            unit_jpy_per_pip=unit_jpy_per_pip,
+    with status_col:
+        st.markdown(
+            f"""
+            <div class="chips">
+              <span class="chip {freshness_class}">● データ {freshness_text}</span>
+              <span class="chip neutral">行数 {quality.get('row_count', 0):,}</span>
+              <span class="chip neutral">最新経過 {latest_age_text}</span>
+              <span class="chip neutral">{config.market.symbol} / {config.market.timeframe}</span>
+            </div>
+            """,
+            unsafe_allow_html=True,
         )
-
-        save_outputs(trades_df, ai_df, daily_summary)
-
-        st.session_state["trades_df"] = trades_df
-        st.session_state["ai_df"] = ai_df
-        st.session_state["daily_summary"] = daily_summary
-        st.session_state.pop("ai_report", None)
-
-        st.success("疑似売買を実行し、ローカルに出力しました。")
-
+        st.caption(str(quality.get("message", "")))
 
 trades_df = st.session_state.get("trades_df", pd.DataFrame())
 ai_df = st.session_state.get("ai_df", pd.DataFrame())
 daily_summary = st.session_state.get("daily_summary", pd.DataFrame())
+report = st.session_state.get("ai_report")
 
+has_run = not daily_summary.empty
+can_review = has_run and not trades_df.empty and not ai_df.empty
+current_run_id = first_value(daily_summary, "run_id", "未実行")
+uploaded_run_id = st.session_state.get("uploaded_run_id")
+
+st.markdown("## 2. 実行する")
+with st.container(border=True):
+    m1, m2, m3, m4 = st.columns(4)
+    m1.metric("現在のrun", current_run_id)
+    m2.metric("データ", freshness_text)
+    m3.metric("AIレビュー", "完了" if report else "未実施")
+    m4.metric("S3保存", "完了" if has_run and uploaded_run_id == current_run_id else "未保存")
+    st.divider()
+
+    c1, c2, c3 = st.columns(3)
+    with c1:
+        st.markdown('<div class="step">STEP 1</div>', unsafe_allow_html=True)
+        run_button = st.button("シミュレーションを実行", type="primary", disabled=price_df.empty)
+        st.caption("売買シグナルと固定リスク条件で検証します。")
+    with c2:
+        st.markdown('<div class="step">STEP 2</div>', unsafe_allow_html=True)
+        review_button = st.button("AIレビューを生成", disabled=not can_review)
+        st.caption("結果をAIが要約し、確認点を提示します。")
+    with c3:
+        st.markdown('<div class="step">STEP 3</div>', unsafe_allow_html=True)
+        upload_button = st.button("結果をS3へ保存", disabled=not (has_run and report))
+        st.caption("AIレビューを含む結果を履歴へ保存します。")
+
+if run_button:
+    try:
+        trades_df, ai_df, daily_summary = run_backtest(
+            price_df, macro_events,
+            take_profit_pips=take_profit_pips,
+            stop_loss_pips=stop_loss_pips,
+            unit_jpy_per_pip=unit_jpy_per_pip,
+            config=config,
+        )
+        save_outputs(trades_df, ai_df, daily_summary)
+        st.session_state["trades_df"] = trades_df
+        st.session_state["ai_df"] = ai_df
+        st.session_state["daily_summary"] = daily_summary
+        st.session_state.pop("ai_report", None)
+        st.session_state.pop("uploaded_run_id", None)
+        if daily_summary.empty:
+            st.session_state["flash_message"] = (
+                "warning",
+                "実行は完了しましたが、今回の条件では決済済み取引がありませんでした。",
+            )
+        else:
+            st.session_state["flash_message"] = (
+                "success",
+                f"シミュレーション完了：{first_value(daily_summary, 'run_id')}",
+            )
+        st.rerun()
+    except Exception as exc:
+        st.error(f"シミュレーションに失敗しました: {exc}")
 
 if review_button:
-    if trades_df.empty or ai_df.empty or daily_summary.empty:
-        st.error("まず「① 疑似売買を実行」を押してください。")
-    elif price_df.empty:
-        st.error("価格データがないため、AIレビューを生成できません。")
-    else:
-        try:
-            report = generate_ai_report(
-                price_df=price_df,
-                trades_df=trades_df,
-                ai_df=ai_df,
-                daily_summary=daily_summary,
-                macro_events=macro_events,
-            )
-
-            st.session_state["ai_report"] = report
-            st.success("AI相場レビューを生成しました。")
-
-        except Exception as e:
-            st.error(f"AI相場レビュー生成に失敗しました: {e}")
-
+    try:
+        report = generate_ai_report(
+            price_df=price_df,
+            trades_df=trades_df,
+            ai_df=ai_df,
+            daily_summary=daily_summary,
+            macro_events=macro_events,
+        )
+        st.session_state["ai_report"] = report
+        st.session_state["flash_message"] = ("success", "AIレビューを生成しました。")
+        st.rerun()
+    except Exception as exc:
+        st.error(f"AIレビュー生成に失敗しました: {exc}")
 
 if upload_button:
     try:
         uploaded_paths = upload_outputs_to_s3()
-        st.success("S3アップロードが完了しました。")
-        with st.expander("アップロード先"):
-            for path in uploaded_paths:
-                st.write(path)
-    except Exception as e:
-        st.error(f"S3アップロードに失敗しました: {e}")
+        current_run_id = first_value(daily_summary, "run_id", "")
+        st.session_state["uploaded_run_id"] = current_run_id
+        st.session_state["uploaded_paths"] = uploaded_paths
+        st.session_state["flash_message"] = (
+            "success",
+            f"run {current_run_id} をS3へ保存しました。",
+        )
+        st.rerun()
+    except Exception as exc:
+        st.error(f"S3への保存に失敗しました: {exc}")
 
+if st.session_state.get("uploaded_paths"):
+    with st.expander("直近のS3保存先"):
+        for path in st.session_state["uploaded_paths"]:
+            st.code(path)
 
-report = st.session_state.get("ai_report")
+trades_df = st.session_state.get("trades_df", trades_df)
+ai_df = st.session_state.get("ai_df", ai_df)
+daily_summary = st.session_state.get("daily_summary", daily_summary)
+report = st.session_state.get("ai_report", report)
 
+st.markdown("## 3. 結果を見る")
+if daily_summary.empty:
+    st.info("「シミュレーションを実行」を押すと、損益・取引・AI判断がここに表示されます。")
+else:
+    total_pnl = float(trades_df["pnl_jpy"].sum()) if "pnl_jpy" in trades_df else 0.0
+    trade_count = len(trades_df)
+    win_rate = (
+        float(trades_df["result"].eq("win").sum() / trade_count)
+        if trade_count and "result" in trades_df else 0.0
+    )
+    r1, r2, r3, r4 = st.columns(4)
+    r1.metric("総損益", f"{total_pnl:,.0f}円")
+    r2.metric("取引回数", f"{trade_count}回")
+    r3.metric("勝率", f"{win_rate:.1%}")
+    r4.metric("run ID", first_value(daily_summary, "run_id"))
 
-if report:
-    st.markdown("## 最新AIレビュー")
+    if report:
+        st.markdown("### AIレビュー")
+        ai_status, ai_body = st.columns([1, 2.2])
+        with ai_status:
+            st.metric("取引可否", permission_label(report["trade_permission"]))
+            st.metric("示唆方向", side_label(report["suggested_side"]))
+            st.metric("信頼度", f'{report["confidence"]:.0%}')
+        with ai_body:
+            with st.container(border=True):
+                st.markdown("**相場要約**")
+                st.write(report["market_summary"])
+                st.markdown("**次の行動**")
+                st.write(report["next_action"])
 
-    rc1, rc2, rc3 = st.columns(3)
-    rc1.metric("取引可否", permission_label(report["trade_permission"]))
-    rc2.metric("示唆方向", side_label(report["suggested_side"]))
-    rc3.metric("信頼度", f'{report["confidence"]:.0%}')
+    overview_tab, trades_tab, details_tab = st.tabs(["概要", "取引履歴", "詳細・診断"])
 
-    with st.container(border=True):
-        st.markdown("### 相場要約")
-        st.write(report["market_summary"])
+    with overview_tab:
+        chart1, chart2 = st.columns(2)
+        with chart1:
+            if not price_df.empty:
+                fig = px.line(price_df.tail(300), x="timestamp", y="close", title=f"{config.market.symbol} 価格")
+                fig.update_layout(margin=dict(l=10, r=10, t=50, b=10), xaxis_title=None, yaxis_title=None)
+                st.plotly_chart(fig, width="stretch")
+        with chart2:
+            pnl_df = daily_summary.copy()
+            if "trade_date" in pnl_df.columns:
+                pnl_df["trade_date"] = pd.to_datetime(pnl_df["trade_date"]).dt.strftime("%Y-%m-%d")
+            fig = px.bar(pnl_df, x="trade_date", y="total_pnl", title="日次損益")
+            fig.update_layout(
+                margin=dict(l=10, r=10, t=50, b=10),
+                xaxis_title=None, yaxis_title=None, xaxis_type="category",
+            )
+            st.plotly_chart(fig, width="stretch")
 
-    with st.container(border=True):
-        st.markdown("### 次の行動")
-        st.write(report["next_action"])
+        if report:
+            reasons_col, warnings_col = st.columns(2)
+            with reasons_col:
+                with st.container(border=True):
+                    st.markdown("**AIの主な理由**")
+                    for reason in report.get("main_reasons", []) or ["理由はありません。"]:
+                        st.write(f"• {reason}")
+            with warnings_col:
+                with st.container(border=True):
+                    st.markdown("**警告・注意点**")
+                    for warning in report.get("warnings", []) or ["警告はありません。"]:
+                        st.write(f"• {warning}")
 
-
-tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs(
-    ["Summary", "AI Review", "Trades", "AI Logs", "Events", "Data"]
-)
-
-
-with tab1:
-    st.subheader("運用サマリー")
-
-    if trades_df.empty:
-        st.info("上の「① 疑似売買を実行」から開始してください。")
-    else:
-        total_pnl = trades_df["pnl_jpy"].sum()
-        trade_count = len(trades_df)
-        win_rate = (trades_df["result"].eq("win").sum() / trade_count) if trade_count else 0
-
-        c1, c2, c3 = st.columns(3)
-        c1.metric("総損益", f"{total_pnl:,.0f} 円")
-        c2.metric("取引回数", f"{trade_count}")
-        c3.metric("勝率", f"{win_rate:.1%}")
-
-        if not daily_summary.empty:
-            fig = px.bar(daily_summary, x="trade_date", y="total_pnl", title="日次損益")
-            st.plotly_chart(fig, use_container_width=True)
-
-        if not price_df.empty:
-            fig2 = px.line(price_df.tail(300), x="timestamp", y="close", title="USD/JPY Close")
-            st.plotly_chart(fig2, use_container_width=True)
-
-
-with tab2:
-    st.subheader("AIレビュー詳細")
-
-    if not report:
-        st.info("上の「② AIレビュー生成」を押すと、ここに詳細が表示されます。")
-    else:
-        st.markdown("### 主な理由")
-        for reason in report["main_reasons"]:
-            st.write(f"- {reason}")
-
-        st.markdown("### 警告")
-        for warning in report["warnings"]:
-            st.write(f"- {warning}")
-
-        with st.expander("JSON出力"):
-            st.code(json.dumps(report, ensure_ascii=False, indent=2), language="json")
-
-
-with tab3:
-    st.subheader("取引ログ")
-
-    if trades_df.empty:
-        st.info("取引ログはまだありません。")
-    else:
-        display_cols = [
-            c for c in [
-                "run_id",
-                "entry_time",
-                "side",
-                "entry_price",
-                "exit_time",
-                "exit_price",
-                "pips",
-                "pnl_jpy",
-                "result",
-                "exit_reason",
-            ]
-            if c in trades_df.columns
+    with trades_tab:
+        columns = [
+            col for col in [
+                "entry_time", "side", "entry_price", "exit_time", "exit_price",
+                "pips", "pnl_jpy", "result", "exit_reason",
+            ] if col in trades_df.columns
         ]
-        st.dataframe(trades_df[display_cols], use_container_width=True)
+        if not columns:
+            st.info("取引履歴はありません。")
+        else:
+            display_df = trades_df[columns].copy()
+            if "side" in display_df:
+                display_df["side"] = display_df["side"].map(side_label)
+            if "result" in display_df:
+                display_df["result"] = display_df["result"].map(result_label)
+            st.dataframe(display_df, width="stretch", hide_index=True)
 
-
-with tab4:
-    st.subheader("AI判断ログ")
-
-    if ai_df.empty:
-        st.info("AI判断ログはまだありません。")
-    else:
-        st.dataframe(ai_df.tail(100), use_container_width=True)
-
-        if "confidence" in ai_df.columns:
-            fig = px.histogram(ai_df, x="confidence", title="AI Confidence分布")
-            st.plotly_chart(fig, use_container_width=True)
-
-
-with tab5:
-    st.subheader("経済イベント")
-    st.dataframe(macro_events, use_container_width=True)
-
-
-with tab6:
-    st.subheader("データ品質")
-
-    if price_df.empty:
-        st.info("価格データがありません。")
-    else:
-        c1, c2, c3, c4 = st.columns(4)
-        c1.metric("行数", quality["row_count"])
-        c2.metric("開始時刻", quality["start_time"])
-        c3.metric("終了時刻", quality["end_time"])
-        c4.metric("最新データ経過分", quality["latest_age_minutes"])
-
-        st.write(f"鮮度ステータス: **{quality['freshness_status']}**")
-        st.info(quality["message"])
-
-        st.markdown("### 価格データプレビュー")
-        st.dataframe(price_df.tail(20), use_container_width=True)
+    with details_tab:
+        with st.expander("固定リスク設定", expanded=True):
+            d1, d2, d3, d4 = st.columns(4)
+            d1.metric("日次損失上限", f"{risk.max_daily_loss_jpy:,.0f}円")
+            d2.metric("最大連敗", f"{risk.max_consecutive_losses}回")
+            d3.metric("1日最大取引", f"{risk.max_trades_per_day}回")
+            d4.metric("最大スプレッド", f"{risk.max_spread}")
+        with st.expander("AI判断ログ"):
+            st.dataframe(ai_df.tail(100), width="stretch", hide_index=True)
+        with st.expander("経済イベント"):
+            st.dataframe(macro_events, width="stretch", hide_index=True)
+        with st.expander("価格データと品質"):
+            q1, q2, q3, q4 = st.columns(4)
+            q1.metric("行数", quality.get("row_count", 0))
+            q2.metric("開始", quality.get("start_time", "-"))
+            q3.metric("終了", quality.get("end_time", "-"))
+            q4.metric("最新経過", latest_age_text)
+            st.caption(str(quality.get("message", "")))
+            st.dataframe(price_df.tail(20), width="stretch", hide_index=True)
+        if report:
+            with st.expander("AIレビューJSON"):
+                st.code(json.dumps(report, ensure_ascii=False, indent=2), language="json")
